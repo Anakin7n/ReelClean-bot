@@ -11,7 +11,7 @@ D:\ReelClean-bot\
 ├── auto_bot.py          # 机器人主程序（飞书事件处理 + 文件收发）
 ├── auto_clean.py        # 核心数据处理逻辑（process_data 入口）
 ├── requirements.txt     # Python 依赖
-├── start.bat            # 双击启动（推荐，零依赖）
+├── start.vbs            # 双击启动（推荐，零闪屏）
 ├── start.ps1            # PowerShell 启动（备用）
 ├── .venv/               # Python 虚拟环境（不提交 git）
 ├── .env                 # 飞书应用凭证（不提交 git）
@@ -61,7 +61,7 @@ FEISHU_APP_SECRET=xxxxxxxxxxxxxxxxxxxx
    .\.venv\Scripts\pip install -r requirements.txt
    ```
 4. 填入飞书凭证到 `.env`
-5. 双击 `start.bat` 启动
+5. 双击 `start.vbs` 启动
 
 ## 代码说明
 
