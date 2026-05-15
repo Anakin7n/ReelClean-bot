@@ -4,11 +4,13 @@
 
 飞书群聊机器人，接收 3 个 Excel 文件 + 6 个参数文本，自动处理影院数据，回复三份文案和两个处理后的文件。WebSocket 长连接模式，无需公网 IP。
 
+不依赖飞书官方 SDK（`lark-oapi`），使用原生 `websockets` + `requests` + 自写 protobuf 解析器，启动速度从 ~23s 降到 <1s。
+
 ## 文件结构
 
 ```
 D:\ReelClean-bot\
-├── auto_bot.py          # 机器人主程序（飞书事件处理 + 文件收发）
+├── auto_bot.py          # 机器人主程序（WebSocket 客户端 + 事件处理）
 ├── auto_clean.py        # 核心数据处理逻辑（process_data 入口）
 ├── requirements.txt     # Python 依赖
 ├── start.vbs            # 双击启动（推荐，零闪屏）
@@ -64,6 +66,15 @@ FEISHU_APP_SECRET=xxxxxxxxxxxxxxxxxxxx
 5. 双击 `start.vbs` 启动
 
 ## 代码说明
+
+### 架构
+
+不依赖飞书官方 SDK，自建轻量客户端：
+
+- **`FeishuWsClient`** — 自定义 WebSocket 客户端，调用 `/callback/ws/endpoint` 获取连接地址
+- **`encode_ping_frame()` / `decode_frame()`** — 自写 protobuf 编解码器（飞书 WS 帧格式仅需几个字段，无需完整 protobuf 库）
+- **HTTP API** — 直接用 `requests` 调用飞书 REST API（发消息、上传/下载文件）
+- **`auto_clean`** — 懒加载，首次处理 Excel 时才导入（导入 pandas/numpy ~1.7s）
 
 ### 消息流程
 
