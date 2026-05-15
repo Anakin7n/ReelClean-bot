@@ -1,2 +1,2 @@
 Set-Location (Split-Path -Parent $MyInvocation.MyCommand.Path)
-python auto_bot.py
+.\.venv\Scripts\python.exe auto_bot.py
