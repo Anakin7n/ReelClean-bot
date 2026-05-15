@@ -9,11 +9,13 @@
 ```
 D:\ReelClean-bot\
 ├── auto_bot.py          # 机器人主程序（飞书事件处理 + 文件收发）
-├── .env                 # 飞书应用凭证（不提交 git）
-├── .seen_msg_ids        # 消息去重缓存（自动生成）
-├── requirements.txt     # Python 依赖
 ├── auto_clean.py        # 核心数据处理逻辑（process_data 入口）
+├── requirements.txt     # Python 依赖
 ├── start.ps1            # 双击启动（PowerShell）
+├── .venv/               # Python 虚拟环境（不提交 git）
+├── .env                 # 飞书应用凭证（不提交 git）
+├── .gitignore           # Git 忽略规则
+├── .seen_msg_ids        # 消息去重缓存（自动生成）
 └── CLAUDE.md            # 本文件
 ```
 
@@ -22,9 +24,11 @@ D:\ReelClean-bot\
 ## 环境要求
 
 - Windows 10+
-- Python 3.12+，已安装依赖：
+- Python 3.12+
+- 使用项目自带的虚拟环境（`.venv/`），不依赖系统 Python：
   ```
-  pip install lark-oapi python-dotenv requests pandas openpyxl numpy
+  python -m venv .venv
+  .\.venv\Scripts\pip install -r requirements.txt
   ```
 - 飞书应用（需开启机器人能力，订阅 `im.message.receive_v1` 事件）
 
@@ -50,7 +54,11 @@ FEISHU_APP_SECRET=xxxxxxxxxxxxxxxxxxxx
 
 1. 复制整个 `ReelClean-bot\` 文件夹到新设备
 2. 安装 Python 3.12+
-3. 安装依赖：`pip install lark-oapi python-dotenv requests pandas openpyxl numpy`
+3. 创建虚拟环境并安装依赖：
+   ```
+   python -m venv .venv
+   .\.venv\Scripts\pip install -r requirements.txt
+   ```
 4. 填入飞书凭证到 `.env`
 5. 双击 `start.ps1` 启动
 
