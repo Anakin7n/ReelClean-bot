@@ -53,6 +53,14 @@ FEISHU_APP_ID=cli_xxxxxxxx
 FEISHU_APP_SECRET=xxxxxxxxxxxxxxxxxxxx
 ```
 
+## 入口
+
+| 方式 | 文件 | 说明 |
+|------|------|------|
+| 推荐启动 | `start.vbs` | 双击弹出 PowerShell 蓝窗口，零闪屏 |
+| 备用启动 | `start.ps1` | PowerShell 脚本，右键"使用 PowerShell 运行" |
+| 直接运行 | `.\.venv\Scripts\python.exe auto_bot.py` | 使用虚拟环境 Python |
+
 ## 移植到新设备
 
 1. 复制整个 `ReelClean-bot\` 文件夹到新设备
@@ -76,6 +84,33 @@ FEISHU_APP_SECRET=xxxxxxxxxxxxxxxxxxxx
 - **HTTP API** — 直接用 `requests` 调用飞书 REST API（发消息、上传/下载文件）
 - **`auto_clean`** — 懒加载，首次处理 Excel 时才导入（导入 pandas/numpy ~1.7s）
 
+### WebSocket 长连接架构
+
+```
+FeishuWsClient.connect()
+  └─ _try_connect()
+       ├─ _get_ws_url()   → POST /callback/ws/endpoint 获取 WS 地址
+       ├─ websockets.connect(url)   ← 直连飞书 WebSocket 网关
+       ├─ _ping_loop()    → 定时发送 protobuf 编码的 ping 帧
+       └─ _read_loop()
+            ├─ recv() → decode_frame() → 帧类型判断
+            └─ type=1: asyncio.create_task(_process_event())
+                         └─ loop.run_in_executor(线程池) → handle_xxx()
+```
+
+关键细节：
+- WS 端点 URL 为 `https://open.feishu.cn/callback/ws/endpoint`
+- 从 URL 参数 `service_id` 提取后用于 ping 帧编码
+- 事件处理用 `loop.run_in_executor` 丢到 `ThreadPoolExecutor(max_workers=2)` 避免阻塞事件循环
+- 连接断开自动重连，重连间隔 120s
+
+### Protobuf 编解码
+
+自写简化版 protobuf 编解码器，替代 lark-oapi 内置的 google protobuf：
+- `encode_ping_frame(service_id)` — 编码 ping 帧（Header: type=ping）
+- `decode_frame(data)` — 解码 WebSocket 接收帧，支持 varint、length-delimited、嵌套 header 解析
+- `frame_type(frame)` / `frame_data_payload(frame)` — 提取帧类型和载荷
+
 ### 消息流程
 
 ```
@@ -89,13 +124,28 @@ FEISHU_APP_SECRET=xxxxxxxxxxxxxxxxxxxx
 
 ### 关键函数
 
+**Bot 调度层（`auto_bot.py`）：**
+
 | 函数 | 作用 |
 |------|------|
-| `process_data()` | 核心处理（来自 auto_clean.py），输入目录+参数，返回结果字典 |
 | `parse_params()` | 从文本解析 6 个参数，支持中英文冒号和等号 |
 | `handle_file_message()` | 下载文件并暂存到内存 `_pending_files` |
 | `handle_text_message()` | 匹配参数与文件，触发处理 |
 | `_is_duplicate()` | 消息去重，内存 set + 文件持久化 |
+
+**数据清洗层（`auto_clean.py`）：**
+
+| 函数 | 作用 |
+|------|------|
+| `process_data()` | 主入口，串联全部处理流程，返回三份文案 + 两个输出文件路径 |
+| `identify_files()` | 按命名规则识别三个输入文件（`<电影>-落`、`影城明细-<电影>`、第三个） |
+| `process_file3()` | 处理文件3：写入目标排片、剔除已撤回/已驳回、计算实际消耗 |
+| `process_file1_sheet1()` | 处理文件1 Sheet1：从 File2/File3 合并影城数据，重算 Excel 公式列 |
+| `compute_luowei_percentages()` | 计算落位 Sheet 的分日新增比例（F9）和实际开场数量（F16） |
+| `save_file1_and_write_d8()` | 将处理后的 Sheet1 回写到 File1，并写入落位 D8 公式 |
+| `generate_wenan1()` | 文案1：后台消耗 vs 实际消耗对比 |
+| `generate_wenan2()` | 文案2：合作影城开场情况统计 |
+| `generate_wenan3()` | 文案3：单体落位预估（低值-高值区间） |
 
 ### 参数格式
 
