@@ -13,13 +13,13 @@ D:\ReelClean-bot\
 ├── auto_bot.py          # 机器人主程序（WebSocket 客户端 + 事件处理）
 ├── auto_clean.py        # 核心数据处理逻辑（process_data 入口）
 ├── requirements.txt     # Python 依赖
+├── install.bat          # 一键安装脚本（双击自动创建虚拟环境 + 安装依赖 + 生成 .env 模板）
 ├── start.vbs            # 双击启动（推荐，零闪屏）
 ├── start.ps1            # PowerShell 启动（备用）
 ├── .venv/               # Python 虚拟环境（不提交 git）
 ├── .env                 # 飞书应用凭证（不提交 git）
 ├── .gitignore           # Git 忽略规则
-├── .seen_msg_ids        # 消息去重缓存（自动生成）
-└── CLAUDE.md            # 本文件
+└── .seen_msg_ids        # 消息去重缓存（自动生成）
 ```
 
 所有代码自包含在一个目录中，无需外部文件。
@@ -28,10 +28,9 @@ D:\ReelClean-bot\
 
 - Windows 10+
 - Python 3.12+
-- 使用项目自带的虚拟环境（`.venv/`），不依赖系统 Python：
+- 推荐使用项目虚拟环境（`install.bat` 一键创建），也可直接使用系统 Python：
   ```
-  python -m venv .venv
-  .\.venv\Scripts\pip install -r requirements.txt
+  pip install -r requirements.txt
   ```
 - 飞书应用（需开启机器人能力，订阅 `im.message.receive_v1` 事件）
 
@@ -58,20 +57,20 @@ FEISHU_APP_SECRET=xxxxxxxxxxxxxxxxxxxx
 | 方式 | 文件 | 说明 |
 |------|------|------|
 | 推荐启动 | `start.vbs` | 双击弹出 PowerShell 蓝窗口，零闪屏 |
-| 备用启动 | `start.ps1` | PowerShell 脚本，右键"使用 PowerShell 运行" |
-| 直接运行 | `.\.venv\Scripts\python.exe auto_bot.py` | 使用虚拟环境 Python |
+| 备用启动 | `start.ps1` | 右键"使用 PowerShell 运行"，自动识别 .venv 或系统 Python |
+| 安装脚本 | `install.bat` | 首次使用双击运行，一键创建虚拟环境 + 安装依赖 |
+
+启动脚本 `start.ps1` 会自动判断：有 `.venv` 则用虚拟环境 Python，没有则用系统 Python。
 
 ## 移植到新设备
 
 1. 复制整个 `ReelClean-bot\` 文件夹到新设备
-2. 安装 Python 3.12+
-3. 创建虚拟环境并安装依赖：
-   ```
-   python -m venv .venv
-   .\.venv\Scripts\pip install -r requirements.txt
-   ```
-4. 填入飞书凭证到 `.env`
+2. 安装 Python 3.12+（勾选"Add Python to PATH"）
+3. 双击 `install.bat`，自动完成虚拟环境创建、pip 升级、依赖安装、.env 模板生成
+4. 编辑 `.env` 填入飞书凭证
 5. 双击 `start.vbs` 启动
+
+> 如果不想用虚拟环境，可跳过第 3 步，直接 `pip install -r requirements.txt` 安装依赖到系统 Python。启动脚本会自动识别。
 
 ## 代码说明
 
