@@ -38,9 +38,9 @@ D:\ReelClean-bot\
 
 1. 飞书开放平台 → 创建应用 → 开启**机器人**能力
 2. **权限管理**添加：
-   - `im:message` — 读取消息
-   - `im:message:send_as_bot` — 发送消息
-   - `im:resource` — 上传/下载文件
+   - `im:message.group_msg` — 获取群组中所有消息（敏感权限）
+   - `im:message:send_as_bot` — 以应用的身份发消息
+   - `im:resource` — 获取与上传图片或文件资源
 3. **事件订阅**添加 `im.message.receive_v1`（WebSocket 模式无需回调地址）
 4. 发布应用并通过审核
 5. 获取 App ID / App Secret 填入 `.env`
