@@ -2,7 +2,7 @@
 
 ## 概述
 
-飞书群聊机器人，接收 3 个 Excel 文件 + 6 个参数文本，自动处理影院数据，回复三份文案和两个处理后的文件。WebSocket 长连接模式，无需公网 IP。
+飞书群聊机器人，接收 3 个 Excel 文件 + 4 个参数文本，自动处理影院数据，回复三份文案和两个处理后的文件。WebSocket 长连接模式，无需公网 IP。
 
 不依赖飞书官方 SDK（`lark-oapi`），使用原生 `websockets` + `requests` + 自写 protobuf 解析器，启动速度从 ~23s 降到 <1s。
 
@@ -127,7 +127,7 @@ FeishuWsClient.connect()
 
 | 函数 | 作用 |
 |------|------|
-| `parse_params()` | 从文本解析 6 个参数，支持中英文冒号和等号 |
+| `parse_params()` | 从文本解析 4 个参数，支持中英文冒号和等号 |
 | `handle_file_message()` | 下载文件并暂存到内存 `_pending_files` |
 | `handle_text_message()` | 匹配参数与文件，触发处理 |
 | `_is_duplicate()` | 消息去重，内存 set + 文件持久化 |
