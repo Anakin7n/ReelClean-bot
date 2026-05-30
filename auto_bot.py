@@ -251,7 +251,6 @@ def parse_params(text: str) -> dict | None:
     text = re.sub(r'@\S+\s*', '', text).strip()
     params = {}
     patterns = [
-        (r'目标排片[：:=]\s*([\d.]+)', 'target_paipian'),
         (r'总成本[：:=]\s*([\d.]+)', 'total_cost'),
         (r'后台消耗[：:=]\s*([\d.]+)', 'backend_consume'),
         (r'上一时段[：:=]\s*([\d.]+)', 'prev_actual'),
@@ -261,7 +260,7 @@ def parse_params(text: str) -> dict | None:
         m = re.search(pattern, text)
         if m:
             params[key] = m.group(1)
-    required = ['target_paipian', 'total_cost', 'backend_consume', 'prev_actual', 'd8_pct']
+    required = ['total_cost', 'backend_consume', 'prev_actual', 'd8_pct']
     if all(k in params for k in required):
         for k in required:
             params[k] = float(params[k])
@@ -294,7 +293,7 @@ def on_file_message(msg_id: str, chat_id: str, file_key: str, file_name: str):
         try:
             send_text(chat_id,
                 f"已收到 3 个文件，请发送参数文本，格式如下：\n"
-                f"目标排片:0.2 总成本:300000 后台消耗:32.8 上一时段:83.4 D8百分比:4.4")
+                f"总成本:300000 后台消耗:32.8 上一时段:83.4 D8百分比:4.4")
         except Exception as e:
             print(f"    [发送失败] {e}")
 
@@ -332,7 +331,6 @@ def on_text_message(msg_id: str, chat_id: str, text: str):
         result = process_data(
             work_dir=work_dir,
             output_dir=output_dir,
-            target_paipian=params["target_paipian"],
             total_cost=params["total_cost"],
             backend_consume=params["backend_consume"],
             prev_actual=params["prev_actual"],
@@ -565,7 +563,7 @@ def main():
     print(f"启动自动清洗机器人 (App ID: {APP_ID[:10]}...)")
     print("使用说明：")
     print("  1) 在群聊发送 3 个 Excel 文件")
-    print("  2) 发送参数: 目标排片:0.2 总成本:300000 后台消耗:32.8 上一时段:83.4 D8百分比:4.4")
+    print("  2) 发送参数: 总成本:300000 后台消耗:32.8 上一时段:83.4 D8百分比:4.4")
     print("  3) 机器人自动回复文案和处理后的文件")
     print()
 

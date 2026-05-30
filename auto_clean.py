@@ -65,7 +65,7 @@ def identify_files(work_dir):
 # ============================================================
 # Process File 3
 # ============================================================
-def process_file3(file3_path, target_paipian_value, total_cost, output_dir):
+def process_file3(file3_path, total_cost, output_dir):
     df3 = pd.read_excel(file3_path)
 
     target_col = find_column(df3, ["目标排片"])
@@ -75,7 +75,16 @@ def process_file3(file3_path, target_paipian_value, total_cost, output_dir):
     if not status_col: raise ValueError(f"未找到状态列。可用: {list(df3.columns)}")
     if not price_col: raise ValueError(f"未找到单价列。可用: {list(df3.columns)}")
 
-    df3[target_col] = target_paipian_value
+    # 从目标排片文本中提取百分比（如"达到 25%" → 0.25），支持每行不同
+    def _parse_pct(text):
+        if pd.isna(text) or not str(text).strip():
+            return 0.0
+        m = re.search(r'(\d+(?:\.\d+)?)\s*%', str(text))
+        if m:
+            return float(m.group(1)) / 100.0
+        return 0.0
+
+    df3[target_col] = df3[target_col].apply(_parse_pct)
     df3 = df3[~df3[status_col].isin(["已撤回", "已驳回"])]
 
     nv = pd.to_numeric(df3[price_col], errors='coerce')
@@ -393,13 +402,13 @@ def generate_wenan3(movie_name, b6_val, luowei_data):
 # ============================================================
 # Main entry point
 # ============================================================
-def process_data(work_dir, output_dir, target_paipian, total_cost, backend_consume, prev_actual, d8_pct):
+def process_data(work_dir, output_dir, total_cost, backend_consume, prev_actual, d8_pct):
     os.makedirs(output_dir, exist_ok=True)
 
     file1, file2, file3, movie_name = identify_files(work_dir)
     luowei_data = read_luowei_from_original(file1)
 
-    df3, actual_consumption, price_count, file3_output = process_file3(file3, target_paipian, total_cost, output_dir)
+    df3, actual_consumption, price_count, file3_output = process_file3(file3, total_cost, output_dir)
     df1_sheet1, col_info = process_file1_sheet1(file1, file2, df3, movie_name)
 
     file1_output = save_file1_and_write_d8(file1, df1_sheet1, output_dir, d8_pct)
