@@ -56,7 +56,11 @@ def _get_token() -> str:
 def _feishu_post(path, json_body=None):
     headers = {"Authorization": f"Bearer {_get_token()}"}
     resp = requests.post(f"{_FEISHU_DOMAIN}{path}", headers=headers, json=json_body, timeout=30)
-    return resp.json()
+    resp.raise_for_status()
+    data = resp.json()
+    if data.get("code") != 0:
+        print(f"[飞书API错误] {path}: code={data.get('code')} msg={data.get('msg')}")
+    return data
 
 
 def send_text(chat_id: str, text: str):
@@ -314,7 +318,6 @@ def on_text_message(msg_id: str, chat_id: str, text: str):
 
     reply_text(msg_id, "收到，正在处理...")
 
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from auto_clean import process_data
 
     work_dir = tempfile.mkdtemp(prefix="auto_")

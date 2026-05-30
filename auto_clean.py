@@ -58,7 +58,7 @@ def identify_files(work_dir):
     if not file2: raise FileNotFoundError("未找到文件2（影城明细-<电影名称>.xlsx）")
     if not file3: raise FileNotFoundError("未找到文件3")
 
-    movie_name = os.path.splitext(os.path.basename(file1))[0][:-2]
+    movie_name = os.path.splitext(os.path.basename(file1))[0].removesuffix("-落")
     return file1, file2, file3, movie_name
 
 
@@ -163,6 +163,7 @@ def process_file1_sheet1(file1_path, file2_path, df3, movie_name):
 
     # Recompute formula columns (pandas reads them as 0 because they're Excel formulas)
     col_ting = find_column(df1, ["厅数"], ["厅"])
+    col_weikai = col_hezuo_yingkai = col_yingcheng_yingkai = col_remaining = None
     if col_ting and col_ting in df1.columns:
         ting_numeric = pd.to_numeric(df1[col_ting], errors='coerce').fillna(0)
         bili_numeric = pd.to_numeric(df1[col_hezuo_bili], errors='coerce').fillna(0) if col_hezuo_bili in df1.columns else 0
@@ -185,12 +186,19 @@ def process_file1_sheet1(file1_path, file2_path, df3, movie_name):
         col_remaining = find_column(df1, ["7.27", "抓娃娃", "剩余"], ["抓娃娃", "剩余"]) or "7.27抓娃娃剩余"
         df1[col_remaining] = df1[col_hezuo_yingkai] - zhuawawa_numeric
 
+    col_faxing = find_column(df1, ["发行归属"])
+
     return df1, {
         "id_col_1": id_col_1,
         "col_7_27_zhuawawa": col_zhuawawa,
         "col_7_27_yinyuan": col_yinyuan,
         "col_hezuo_bili": col_hezuo_bili,
         "col_shifou_hezuo": col_shifou_hezuo,
+        "col_weikai": col_weikai,
+        "col_hezuo_yingkai": col_hezuo_yingkai,
+        "col_yingcheng_yingkai": col_yingcheng_yingkai,
+        "col_remaining": col_remaining,
+        "col_faxing": col_faxing,
     }
 
 
@@ -214,10 +222,10 @@ def compute_luowei_percentages(df1, col_info, d8_pct):
     zhuawawa_col = col_info["col_7_27_zhuawawa"]
     yinyuan_col = col_info["col_7_27_yinyuan"]
 
-    col_weikai = find_column(df1, ["影院未开场次数"])
-    col_hezuo_yingkai = find_column(df1, ["合作应开场次数"])
-    col_yingcheng_yingkai = find_column(df1, ["影城应开场次数"])
-    col_faxing = find_column(df1, ["发行归属"])
+    col_weikai = col_info.get("col_weikai")
+    col_hezuo_yingkai = col_info.get("col_hezuo_yingkai")
+    col_yingcheng_yingkai = col_info.get("col_yingcheng_yingkai")
+    col_faxing = col_info.get("col_faxing")
 
     pct = d8_pct / 100.0
     mask_yes = df1[shifou_col] == "是"
@@ -250,27 +258,32 @@ def compute_luowei_percentages(df1, col_info, d8_pct):
 
 
 def save_file1_and_write_d8(file1_path, df1_sheet1, output_dir, d8_pct):
-    wb = openpyxl.load_workbook(file1_path, keep_vba=True)
+    import xlwings as xw
 
-    if "Sheet1" in wb.sheetnames:
-        ws = wb["Sheet1"]
-        ws.delete_rows(1, ws.max_row)
-        for col_idx, col_name in enumerate(df1_sheet1.columns, 1):
-            ws.cell(row=1, column=col_idx, value=str(col_name))
-        for row_idx, row in df1_sheet1.iterrows():
-            for col_idx, value in enumerate(row, 1):
-                ws.cell(row=row_idx + 2, column=col_idx, value=value if not pd.isna(value) else None)
+    app = xw.App(visible=False)
+    try:
+        wb = app.books.open(file1_path)
 
-    if "落位" in wb.sheetnames:
-        wb["落位"]["D8"] = (
-            f'=GETPIVOTDATA("求和项:影院未开场次数",$K$3,"是否合作","否")*{d8_pct/100}'
-            f'+GETPIVOTDATA("求和项:7.27抓娃娃场次数",$K$3,"是否合作","否")'
-        )
+        if "Sheet1" in [s.name for s in wb.sheets]:
+            ws = wb.sheets["Sheet1"]
+            ws.used_range.clear_contents()
+            ws.range("A1").value = [str(c) for c in df1_sheet1.columns]
+            data = df1_sheet1.where(df1_sheet1.notna(), None).values.tolist()
+            if data:
+                ws.range("A2").value = data
 
-    out = os.path.join(output_dir, os.path.basename(file1_path))
-    wb.save(out)
-    wb.close()
-    return out
+        if "落位" in [s.name for s in wb.sheets]:
+            wb.sheets["落位"].range("D8").formula = (
+                f'=GETPIVOTDATA("求和项:影院未开场次数",$K$3,"是否合作","否")*{d8_pct/100}'
+                f'+GETPIVOTDATA("求和项:7.27抓娃娃场次数",$K$3,"是否合作","否")'
+            )
+
+        out = os.path.join(output_dir, os.path.basename(file1_path))
+        wb.save(out)
+        wb.close()
+        return out
+    finally:
+        app.quit()
 
 
 # ============================================================
@@ -319,10 +332,10 @@ def generate_wenan2(movie_name, df1, col_info, luowei_data):
     zero_open = int((z_numeric == 0).sum())
     already_open = int(z_numeric.sum())
 
-    col_hezuo_yingkai = find_column(df1, ["合作应开场次数"])
+    col_hezuo_yingkai = col_info.get("col_hezuo_yingkai")
     should_open = int(pd.to_numeric(hezuo_yes[col_hezuo_yingkai], errors='coerce').fillna(0).sum()) if col_hezuo_yingkai in hezuo_yes.columns else 0
 
-    col_remaining = find_column(df1, ["7.27", "抓娃娃", "剩余"], ["抓娃娃", "剩余"])
+    col_remaining = col_info.get("col_remaining")
     not_open_count = 0
     if col_remaining and col_remaining in hezuo_yes.columns:
         r_numeric = pd.to_numeric(hezuo_yes[col_remaining], errors='coerce').fillna(0)
@@ -356,8 +369,7 @@ def generate_wenan3(movie_name, b6_val, luowei_data):
 
     def to_pct_str(val):
         num = parse_num(val)
-        if abs(num) < 1: return f"{num*100:.1f}%"
-        return f"{num:.1f}%"
+        return f"{num*100:.1f}%"
 
     f9_num = parse_num(luowei_data["f9"])
     f16_num = parse_num(luowei_data["f16"])
