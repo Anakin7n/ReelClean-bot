@@ -1,5 +1,8 @@
 """
 飞书机器人 - 群聊接收 Excel 文件 + 参数，自动处理并回复文案和文件。
+支持两种交互方式：
+  1) 交互式卡片弹窗（主流）：集齐3个文件 → 发送卡片 → 点击按钮填弹窗表单 → 提交
+  2) 纯文本解析（兼容旧流程）：发送参数文本（总成本:300000 后台消耗:32.8 ...）
 WebSocket 长连接模式，无需 ngrok。使用原生 websockets，启动秒级响应。
 """
 import asyncio
@@ -12,6 +15,7 @@ import sys
 import time
 import shutil
 import tempfile
+import threading
 import traceback
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
@@ -31,6 +35,102 @@ _WS_ENDPOINT_URI = "/callback/ws/endpoint"
 # ---- 文件暂存 ----
 _pending_files = {}
 _PENDING_TIMEOUT = 600
+
+# ---- 卡片/Dialog JSON ----
+def get_dialog_card_json() -> str:
+    """返回交互式卡片 JSON（含 Dialog 弹窗表单）。
+    按钮在卡片上，点击弹出弹窗含4个输入框；提交后推送 card.action.trigger 事件。
+
+    注意：飞书 IM 消息 API 不支持 form 内嵌标签，dialogue 是唯一可行的交互式表单方案。
+    """
+    card = {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": "📊 参数填写"},
+            "template": "blue",
+        },
+        "elements": [
+            {
+                "tag": "div",
+                "text": {
+                    "tag": "lark_md",
+                    "content": "已收到 **3 个 Excel 文件**，请点击下方按钮填写清洗参数 👇",
+                },
+            },
+            {
+                "tag": "action",
+                "actions": [
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "📝 填写参数并清洗"},
+                        "type": "primary",
+                        "value": {},
+                        "dialog": {
+                            "title": {
+                                "tag": "plain_text",
+                                "content": "填写清洗参数",
+                            },
+                            "elements": [
+                                {
+                                    "tag": "input",
+                                    "name": "total_cost",
+                                    "label": {"tag": "plain_text", "content": "总成本"},
+                                    "placeholder": {
+                                        "tag": "plain_text",
+                                        "content": "请输入总成本（如 300000）",
+                                    },
+                                    "required": True,
+                                },
+                                {
+                                    "tag": "input",
+                                    "name": "backend_consume",
+                                    "label": {"tag": "plain_text", "content": "后台消耗"},
+                                    "placeholder": {
+                                        "tag": "plain_text",
+                                        "content": "请输入后台消耗（如 32.8）",
+                                    },
+                                    "required": True,
+                                },
+                                {
+                                    "tag": "input",
+                                    "name": "prev_actual",
+                                    "label": {"tag": "plain_text", "content": "上一时段"},
+                                    "placeholder": {
+                                        "tag": "plain_text",
+                                        "content": "请输入上一时段（如 83.4）",
+                                    },
+                                    "required": True,
+                                },
+                                {
+                                    "tag": "input",
+                                    "name": "d8_pct",
+                                    "label": {"tag": "plain_text", "content": "D8百分比"},
+                                    "placeholder": {
+                                        "tag": "plain_text",
+                                        "content": "请输入D8百分比（如 4.4）",
+                                    },
+                                    "required": True,
+                                },
+                            ],
+                            "submit_actions": [
+                                {
+                                    "tag": "button",
+                                    "text": {
+                                        "tag": "plain_text",
+                                        "content": "✅ 确认提交",
+                                    },
+                                    "type": "primary",
+                                    "value": {},
+                                }
+                            ],
+                        },
+                    }
+                ],
+            },
+        ],
+    }
+    return json.dumps(card, ensure_ascii=False)
+
 
 # ---- token 缓存 ----
 _token_cache = {"token": "", "expire": 0}
@@ -56,10 +156,26 @@ def _get_token() -> str:
 def _feishu_post(path, json_body=None):
     headers = {"Authorization": f"Bearer {_get_token()}"}
     resp = requests.post(f"{_FEISHU_DOMAIN}{path}", headers=headers, json=json_body, timeout=30)
-    resp.raise_for_status()
-    data = resp.json()
-    if data.get("code") != 0:
-        print(f"[飞书API错误] {path}: code={data.get('code')} msg={data.get('msg')}")
+    # 先尝试读取响应体（飞书即使 400 也会返回 JSON 含 code/msg）
+    try:
+        data = resp.json()
+    except Exception:
+        data = {"code": -1, "msg": resp.text[:500]}
+    code = data.get("code", -1)
+    if code != 0:
+        # 构建完整的错误信息
+        err_detail = (
+            f"\n{'='*60}\n"
+            f"[飞书API错误]\n"
+            f"  接口: {path}\n"
+            f"  HTTP状态: {resp.status_code}\n"
+            f"  飞书code: {code}\n"
+            f"  飞书msg:  {data.get('msg', '')}\n"
+            f"  请求体:   {json.dumps(json_body, ensure_ascii=False) if json_body else 'None'}\n"
+            f"{'='*60}"
+        )
+        print(err_detail)
+        raise Exception(f"飞书API错误 [{path}]: code={code} msg={data.get('msg', '')}")
     return data
 
 
@@ -76,6 +192,14 @@ def reply_text(message_id: str, text: str):
     return _feishu_post(
         f"/open-apis/im/v1/messages/{message_id}/reply",
         {"msg_type": "text", "content": content},
+    )
+
+
+def send_interactive_card(chat_id: str, card_json: str):
+    """发送交互式卡片消息。card_json 为飞书卡片 JSON 字符串。"""
+    return _feishu_post(
+        f"/open-apis/im/v1/messages?receive_id_type=chat_id",
+        {"receive_id": chat_id, "msg_type": "interactive", "content": card_json},
     )
 
 
@@ -268,55 +392,9 @@ def parse_params(text: str) -> dict | None:
     return None
 
 
-def on_file_message(msg_id: str, chat_id: str, file_key: str, file_name: str):
-    print(f"    [文件处理] file_name={file_name}")
-    if not file_name.lower().endswith(('.xlsx', '.xls')):
-        print(f"    [跳过] 非Excel文件: {file_name}")
-        return
-
-    try:
-        content = download_file_from_feishu(msg_id, file_key)
-        print(f"    [下载成功] {len(content)} bytes")
-    except Exception as e:
-        print(f"    [下载失败] {e}")
-        return
-
-    if chat_id not in _pending_files:
-        _pending_files[chat_id] = {"files": [], "last_time": time.time()}
-    _pending_files[chat_id]["files"].append((file_name, content))
-    _pending_files[chat_id]["files"] = _pending_files[chat_id]["files"][-3:]
-    _pending_files[chat_id]["last_time"] = time.time()
-    n = len(_pending_files[chat_id]["files"])
-    print(f"    [暂存] {n}/3 个文件")
-
-    if n == 3:
-        try:
-            send_text(chat_id,
-                f"已收到 3 个文件，请发送参数文本，格式如下：\n"
-                f"总成本:300000 后台消耗:32.8 上一时段:83.4 D8百分比:4.4")
-        except Exception as e:
-            print(f"    [发送失败] {e}")
-
-
-def on_text_message(msg_id: str, chat_id: str, text: str):
-    params = parse_params(text)
-    if not params:
-        return
-
-    print(f"[参数] chat={chat_id} {params}")
-
-    pending = _pending_files.get(chat_id)
-    if not pending or len(pending["files"]) < 3:
-        reply_text(msg_id,
-            f"参数已收到，但仅找到 {len(pending['files']) if pending else 0} 个 Excel 文件（需要 3 个）。\n"
-            f"请先发送 3 个 Excel 文件，再发送参数文本。")
-        return
-
-    files = pending["files"][-3:]
-    del _pending_files[chat_id]
-
-    reply_text(msg_id, "收到，正在处理...")
-
+def _execute_process(chat_id: str, files: list, params: dict):
+    """核心处理流程：写临时文件 → 调用 process_data → 回复文案和结果文件。
+    on_text_message 和 handle_card_action 共用此函数。"""
     from auto_clean import process_data
 
     work_dir = tempfile.mkdtemp(prefix="auto_")
@@ -366,6 +444,113 @@ def on_text_message(msg_id: str, chat_id: str, text: str):
         shutil.rmtree(output_dir, ignore_errors=True)
 
 
+def on_file_message(msg_id: str, chat_id: str, file_key: str, file_name: str):
+    print(f"    [文件处理] file_name={file_name}")
+    if not file_name.lower().endswith(('.xlsx', '.xls')):
+        print(f"    [跳过] 非Excel文件: {file_name}")
+        return
+
+    try:
+        content = download_file_from_feishu(msg_id, file_key)
+        print(f"    [下载成功] {len(content)} bytes")
+    except Exception as e:
+        print(f"    [下载失败] {e}")
+        return
+
+    if chat_id not in _pending_files:
+        _pending_files[chat_id] = {"files": [], "last_time": time.time()}
+    _pending_files[chat_id]["files"].append((file_name, content))
+    _pending_files[chat_id]["files"] = _pending_files[chat_id]["files"][-3:]
+    _pending_files[chat_id]["last_time"] = time.time()
+    n = len(_pending_files[chat_id]["files"])
+    print(f"    [暂存] {n}/3 个文件")
+
+    if n == 3:
+        try:
+            card_json = get_dialog_card_json()
+            send_interactive_card(chat_id, card_json)
+        except Exception as e:
+            print(f"    [发送卡片失败] {e}")
+
+
+def on_text_message(msg_id: str, chat_id: str, text: str):
+    params = parse_params(text)
+    if not params:
+        return
+
+    print(f"[参数] chat={chat_id} {params}")
+
+    pending = _pending_files.get(chat_id)
+    if not pending or len(pending["files"]) < 3:
+        reply_text(msg_id,
+            f"参数已收到，但仅找到 {len(pending['files']) if pending else 0} 个 Excel 文件（需要 3 个）。\n"
+            f"请先发送 3 个 Excel 文件，再发送参数文本。")
+        return
+
+    files = pending["files"][-3:]
+    del _pending_files[chat_id]
+    reply_text(msg_id, "收到，正在处理...")
+    _execute_process(chat_id, files, params)
+
+
+def handle_card_action(event_data: dict):
+    """处理 Dialog 弹窗表单提交（card.action.trigger 事件）。
+
+    关键时序：
+      1. ACK 已在 _read_loop 中 <3ms 内发送（避免飞书超时）
+      2. 此处提取 event.action.form_value 中的4个参数
+      3. 使用 threading.Thread 后台执行 _execute_process，绝不阻塞事件循环
+    """
+    event = event_data.get("event", {})
+    action = event.get("action", {})
+    form_value = action.get("form_value", {}) or {}
+    context = event.get("context", {})
+    chat_id = context.get("open_chat_id", "") or context.get("chat_id", "")
+
+    if not chat_id:
+        print("[卡片动作] 无法获取 chat_id，忽略")
+        return
+
+    print(f"[卡片动作] chat_id={chat_id} form_value={form_value}")
+
+    # 提取并校验4个参数（form_value 中都是字符串）
+    try:
+        params = {
+            "total_cost": float(form_value.get("total_cost", 0)),
+            "backend_consume": float(form_value.get("backend_consume", 0)),
+            "prev_actual": float(form_value.get("prev_actual", 0)),
+            "d8_pct": float(form_value.get("d8_pct", 0)),
+        }
+    except (ValueError, TypeError) as e:
+        print(f"[卡片动作] 参数解析失败: {e}")
+        send_text(chat_id, "参数格式有误，请填写有效数字后重新提交。")
+        return
+
+    print(f"[卡片动作] 解析成功: {params}")
+
+    # 匹配暂存文件（必须在 spawn 线程前取出，避免竞态）
+    pending = _pending_files.get(chat_id)
+    if not pending or len(pending["files"]) < 3:
+        send_text(chat_id,
+            f"未找到暂存文件（找到 {len(pending['files']) if pending else 0} 个，需要 3 个）。\n"
+            f"请重新发送 3 个 Excel 文件。")
+        return
+
+    files = pending["files"][-3:]
+    del _pending_files[chat_id]
+
+    send_text(chat_id, "收到参数，正在后台处理...")
+
+    # 关键：使用后台线程执行清洗，绝不阻塞 WebSocket 事件循环
+    t = threading.Thread(
+        target=_execute_process,
+        args=(chat_id, files, params),
+        daemon=True,
+    )
+    t.start()
+    print(f"[卡片动作] 已启动后台线程 (thread={t.name}) chat_id={chat_id}")
+
+
 # ---- 事件回调 ----
 _SEEN_FILE = Path(__file__).parent / ".seen_msg_ids"
 _SEEN_MAX = 500
@@ -410,6 +595,13 @@ def _is_duplicate(msg_id: str) -> bool:
 
 def dispatch_event(event_data: dict):
     event = event_data.get("event", {})
+
+    # ── card.action.trigger 事件（弹窗表单提交）──
+    if event.get("type") == "card.action.trigger":
+        handle_card_action(event_data)
+        return
+
+    # ── 消息事件（file / text）──
     msg = event.get("message", {})
     msg_id = msg.get("message_id", "")
     msg_type = msg.get("message_type", "")
@@ -509,6 +701,21 @@ class FeishuWsClient:
                     if not payload:
                         continue
                     event_data = json.loads(payload.decode("utf-8"))
+
+                    # card.action.trigger：毫秒级发送 ACK，避免飞书 3 秒超时
+                    event = event_data.get("event", {})
+                    if event.get("type") == "card.action.trigger":
+                        header = event_data.get("header", {})
+                        message_id = header.get("event_id", "")
+                        if message_id:
+                            ack = json.dumps({
+                                "message_id": message_id,
+                                "code": 200,
+                                "data": "{}",
+                            })
+                            await self._ws.send(ack)
+                            print(f"[ACK] card.action.trigger message_id={message_id}")
+
                     asyncio.create_task(self._process_event(event_data))
             except websockets.exceptions.ConnectionClosed:
                 print("[连接断开]")
@@ -563,7 +770,8 @@ def main():
     print(f"启动自动清洗机器人 (App ID: {APP_ID[:10]}...)")
     print("使用说明：")
     print("  1) 在群聊发送 3 个 Excel 文件")
-    print("  2) 发送参数: 总成本:300000 后台消耗:32.8 上一时段:83.4 D8百分比:4.4")
+    print("  2) 点击 Bot 发送的卡片按钮，在弹窗中填写4个参数并提交")
+    print("     （兼容旧流程：也可直接发送文本参数）")
     print("  3) 机器人自动回复文案和处理后的文件")
     print()
 
