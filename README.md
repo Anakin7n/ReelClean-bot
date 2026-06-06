@@ -2,9 +2,9 @@
 
 ## 概述
 
-飞书群聊机器人，接收 3 个 Excel 文件 + 4 个参数文本，自动处理影院数据，回复三份文案和两个处理后的文件。WebSocket 长连接模式，无需公网 IP。
+飞书群聊机器人，接收 3 个 Excel 文件 + 4 个参数（内联表单卡片 / 兼容纯文本），自动处理影院数据，回复三份文案和两个处理后的文件。WebSocket 长连接模式，无需公网 IP。
 
-不依赖飞书官方 SDK（`lark-oapi`），使用原生 `websockets` + `requests` + 自写 protobuf 解析器，启动速度从 ~23s 降到 <1s。
+核心使用原生 `websockets` + `requests` + 自写 protobuf 编解码器；卡片响应部分借用 `lark-oapi` SDK 的 `Frame` 类（连接建立后预加载，不影响启动速度）。
 
 ## 文件结构
 
@@ -105,20 +105,23 @@ FeishuWsClient.connect()
 
 ### Protobuf 编解码
 
-自写简化版 protobuf 编解码器，替代 lark-oapi 内置的 google protobuf：
+自写简化版 protobuf 编解码器处理 ping 帧和基本事件解码，卡片响应则借用 SDK 的 `Frame` 类正确序列化：
 - `encode_ping_frame(service_id)` — 编码 ping 帧（Header: type=ping）
 - `decode_frame(data)` — 解码 WebSocket 接收帧，支持 varint、length-delimited、嵌套 header 解析
 - `frame_type(frame)` / `frame_data_payload(frame)` — 提取帧类型和载荷
+- 卡片 ACK：回传入站 `Frame` + 替换 `payload` 为 `{code: 200, data: base64(...)}`（飞书卡片协议要求）
 
 ### 消息流程
 
 ```
-文件消息 → handle_file_message() → 下载并暂存
-                                      ↓ (凑齐3个)
-                                   发送提示：请发参数
-文本消息 → parse_params() → 解析参数
-         → handle_text_message() → 取暂存文件 → process_data()
-         → 回复文案 + 上传处理后的文件
+文件消息 → on_file_message() → 下载并暂存到 _pending_files
+                                  ↓ (凑齐3个)
+                             发送内联表单卡片（form 标签 + 4个输入框）
+卡片提交 → card.action.trigger → WS ACK（toast + 卡片更新为"处理中"）
+                               → handle_card_action() → 后台线程 _execute_process()
+文本消息 → parse_params() → 解析参数（兼容旧流程）
+         → on_text_message() → 取暂存文件 → _execute_process()
+                               → 回复文案 + 上传处理后的文件
 ```
 
 ### 关键函数
@@ -127,9 +130,11 @@ FeishuWsClient.connect()
 
 | 函数 | 作用 |
 |------|------|
+| `get_form_card_json()` | 生成内联表单卡片（4个输入框 + 提交按钮） |
 | `parse_params()` | 从文本解析 4 个参数，支持中英文冒号和等号 |
-| `handle_file_message()` | 下载文件并暂存到内存 `_pending_files` |
-| `handle_text_message()` | 匹配参数与文件，触发处理 |
+| `on_file_message()` | 下载文件并暂存到内存 `_pending_files`，集齐3个后发送表单卡片 |
+| `on_text_message()` | 匹配参数与文件，触发处理（兼容纯文本流程） |
+| `handle_card_action()` | 表单提交入口：校验参数 → 后台线程执行清洗 |
 | `_is_duplicate()` | 消息去重，内存 set + 文件持久化 |
 
 **数据清洗层（`auto_clean.py`）：**

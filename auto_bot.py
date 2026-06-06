@@ -1,13 +1,14 @@
 """
 飞书机器人 - 群聊接收 Excel 文件 + 参数，自动处理并回复文案和文件。
 支持两种交互方式：
-  1) 交互式卡片弹窗（主流）：集齐3个文件 → 发送卡片 → 点击按钮填弹窗表单 → 提交
+  1) 交互式表单卡片（主流）：集齐3个文件 → 发送内联表单卡片 → 填写参数提交
   2) 纯文本解析（兼容旧流程）：发送参数文本（总成本:300000 后台消耗:32.8 ...）
 WebSocket 长连接模式，无需 ngrok。使用原生 websockets，启动秒级响应。
 """
 import asyncio
 import concurrent.futures
 import inspect
+import base64
 import json
 import os
 import re
@@ -24,6 +25,8 @@ from dotenv import load_dotenv
 import requests
 import websockets
 
+# 懒加载：SDK protobuf Frame 仅在 card.action.trigger 时导入，避免拖慢启动
+
 load_dotenv()
 
 APP_ID = os.getenv("FEISHU_APP_ID", "")
@@ -37,11 +40,9 @@ _pending_files = {}
 _PENDING_TIMEOUT = 600
 
 # ---- 卡片/Dialog JSON ----
-def get_dialog_card_json() -> str:
-    """返回交互式卡片 JSON（含 Dialog 弹窗表单）。
-    按钮在卡片上，点击弹出弹窗含4个输入框；提交后推送 card.action.trigger 事件。
-
-    注意：飞书 IM 消息 API 不支持 form 内嵌标签，dialogue 是唯一可行的交互式表单方案。
+def get_form_card_json() -> str:
+    """返回内联表单卡片 JSON（直接在卡片中填写参数）。
+    使用 form 标签内嵌输入框，用户填写后点击提交按钮触发 card.action.trigger 事件。
     """
     card = {
         "config": {"wide_screen_mode": True},
@@ -54,77 +55,60 @@ def get_dialog_card_json() -> str:
                 "tag": "div",
                 "text": {
                     "tag": "lark_md",
-                    "content": "已收到 **3 个 Excel 文件**，请点击下方按钮填写清洗参数 👇",
+                    "content": "已收到 **3 个 Excel 文件**，请在下方填写清洗参数 👇",
                 },
             },
             {
-                "tag": "action",
-                "actions": [
+                "tag": "form",
+                "name": "params_form",
+                "elements": [
+                    {
+                        "tag": "input",
+                        "name": "total_cost",
+                        "label": {"tag": "plain_text", "content": "总成本"},
+                        "placeholder": {
+                            "tag": "plain_text",
+                            "content": "请输入总成本（如 300000）",
+                        },
+                        "required": True,
+                    },
+                    {
+                        "tag": "input",
+                        "name": "backend_consume",
+                        "label": {"tag": "plain_text", "content": "后台消耗"},
+                        "placeholder": {
+                            "tag": "plain_text",
+                            "content": "请输入后台消耗（如 32.8）",
+                        },
+                        "required": True,
+                    },
+                    {
+                        "tag": "input",
+                        "name": "prev_actual",
+                        "label": {"tag": "plain_text", "content": "上一时段"},
+                        "placeholder": {
+                            "tag": "plain_text",
+                            "content": "请输入上一时段（如 83.4）",
+                        },
+                        "required": True,
+                    },
+                    {
+                        "tag": "input",
+                        "name": "d8_pct",
+                        "label": {"tag": "plain_text", "content": "D8百分比"},
+                        "placeholder": {
+                            "tag": "plain_text",
+                            "content": "请输入D8百分比（如 4.4）",
+                        },
+                        "required": True,
+                    },
                     {
                         "tag": "button",
-                        "text": {"tag": "plain_text", "content": "📝 填写参数并清洗"},
+                        "text": {"tag": "plain_text", "content": "✅ 确认提交"},
                         "type": "primary",
-                        "value": {},
-                        "dialog": {
-                            "title": {
-                                "tag": "plain_text",
-                                "content": "填写清洗参数",
-                            },
-                            "elements": [
-                                {
-                                    "tag": "input",
-                                    "name": "total_cost",
-                                    "label": {"tag": "plain_text", "content": "总成本"},
-                                    "placeholder": {
-                                        "tag": "plain_text",
-                                        "content": "请输入总成本（如 300000）",
-                                    },
-                                    "required": True,
-                                },
-                                {
-                                    "tag": "input",
-                                    "name": "backend_consume",
-                                    "label": {"tag": "plain_text", "content": "后台消耗"},
-                                    "placeholder": {
-                                        "tag": "plain_text",
-                                        "content": "请输入后台消耗（如 32.8）",
-                                    },
-                                    "required": True,
-                                },
-                                {
-                                    "tag": "input",
-                                    "name": "prev_actual",
-                                    "label": {"tag": "plain_text", "content": "上一时段"},
-                                    "placeholder": {
-                                        "tag": "plain_text",
-                                        "content": "请输入上一时段（如 83.4）",
-                                    },
-                                    "required": True,
-                                },
-                                {
-                                    "tag": "input",
-                                    "name": "d8_pct",
-                                    "label": {"tag": "plain_text", "content": "D8百分比"},
-                                    "placeholder": {
-                                        "tag": "plain_text",
-                                        "content": "请输入D8百分比（如 4.4）",
-                                    },
-                                    "required": True,
-                                },
-                            ],
-                            "submit_actions": [
-                                {
-                                    "tag": "button",
-                                    "text": {
-                                        "tag": "plain_text",
-                                        "content": "✅ 确认提交",
-                                    },
-                                    "type": "primary",
-                                    "value": {},
-                                }
-                            ],
-                        },
-                    }
+                        "name": "submit_btn",
+                        "action_type": "form_submit",
+                    },
                 ],
             },
         ],
@@ -240,13 +224,6 @@ def download_file_from_feishu(message_id: str, file_key: str) -> bytes:
 
 
 # ---- 简化 protobuf frame 解析 ----
-def _pb_varint_size(n: int) -> int:
-    size = 1
-    while n > 127:
-        size += 1
-        n >>= 7
-    return size
-
 
 def _pb_write_varint(buf: bytearray, n: int):
     while n > 127:
@@ -467,7 +444,7 @@ def on_file_message(msg_id: str, chat_id: str, file_key: str, file_name: str):
 
     if n == 3:
         try:
-            card_json = get_dialog_card_json()
+            card_json = get_form_card_json()
             send_interactive_card(chat_id, card_json)
         except Exception as e:
             print(f"    [发送卡片失败] {e}")
@@ -494,13 +471,8 @@ def on_text_message(msg_id: str, chat_id: str, text: str):
 
 
 def handle_card_action(event_data: dict):
-    """处理 Dialog 弹窗表单提交（card.action.trigger 事件）。
-
-    关键时序：
-      1. ACK 已在 _read_loop 中 <3ms 内发送（避免飞书超时）
-      2. 此处提取 event.action.form_value 中的4个参数
-      3. 使用 threading.Thread 后台执行 _execute_process，绝不阻塞事件循环
-    """
+    """处理卡片表单提交（card.action.trigger 事件）。
+    ACK + 卡片更新在 _read_loop 中通过 WS 完成，此处提取参数并后台清洗。"""
     event = event_data.get("event", {})
     action = event.get("action", {})
     form_value = action.get("form_value", {}) or {}
@@ -539,9 +511,7 @@ def handle_card_action(event_data: dict):
     files = pending["files"][-3:]
     del _pending_files[chat_id]
 
-    send_text(chat_id, "收到参数，正在后台处理...")
-
-    # 关键：使用后台线程执行清洗，绝不阻塞 WebSocket 事件循环
+    # 后台线程执行清洗（卡片状态已由 WS ACK 更新为"处理中"）
     t = threading.Thread(
         target=_execute_process,
         args=(chat_id, files, params),
@@ -595,9 +565,11 @@ def _is_duplicate(msg_id: str) -> bool:
 
 def dispatch_event(event_data: dict):
     event = event_data.get("event", {})
+    header = event_data.get("header", {})
 
-    # ── card.action.trigger 事件（弹窗表单提交）──
-    if event.get("type") == "card.action.trigger":
+    # ── card.action.trigger 事件（卡片交互/表单提交）──
+    # 注意：此事件的 event_type 在 header 中，event 对象内无 type 字段
+    if header.get("event_type") == "card.action.trigger":
         handle_card_action(event_data)
         return
 
@@ -610,8 +582,6 @@ def dispatch_event(event_data: dict):
     sender = event.get("sender", {})
     if sender.get("sender_type") == "app":
         return
-
-    print(f"[事件] type={msg_type} chat_id={chat_id}")
 
     if _is_duplicate(msg_id):
         return
@@ -702,19 +672,43 @@ class FeishuWsClient:
                         continue
                     event_data = json.loads(payload.decode("utf-8"))
 
-                    # card.action.trigger：毫秒级发送 ACK，避免飞书 3 秒超时
+                    # 事件日志
                     event = event_data.get("event", {})
-                    if event.get("type") == "card.action.trigger":
-                        header = event_data.get("header", {})
-                        message_id = header.get("event_id", "")
-                        if message_id:
-                            ack = json.dumps({
-                                "message_id": message_id,
-                                "code": 200,
-                                "data": "{}",
-                            })
-                            await self._ws.send(ack)
-                            print(f"[ACK] card.action.trigger message_id={message_id}")
+                    header = event_data.get("header", {})
+                    event_type = header.get("event_type", event.get("type", "?"))
+
+                    # card.action.trigger：用 SDK 的 Frame 正确构建响应帧
+                    if event_type == "card.action.trigger":
+                        sdk_frame = self._PBFrame()
+                        sdk_frame.ParseFromString(raw)
+                        card_response = {
+                            "toast": {"type": "success", "content": "参数已收到，正在处理..."},
+                            "card": {
+                                "type": "raw",
+                                "data": {
+                                    "config": {"wide_screen_mode": True},
+                                    "header": {
+                                        "title": {"tag": "plain_text", "content": "📊 处理中"},
+                                        "template": "blue",
+                                    },
+                                    "elements": [
+                                        {
+                                            "tag": "div",
+                                            "text": {
+                                                "tag": "lark_md",
+                                                "content": "✅ 参数已提交，正在后台清洗数据，请稍候...",
+                                            },
+                                        },
+                                    ],
+                                },
+                            },
+                        }
+                        resp_json = json.dumps(card_response, ensure_ascii=False)
+                        resp_b64 = base64.b64encode(resp_json.encode("utf-8")).decode("ascii")
+                        sdk_resp = json.dumps({"code": 200, "data": resp_b64}, ensure_ascii=False)
+                        sdk_frame.payload = sdk_resp.encode("utf-8")
+                        await self._ws.send(sdk_frame.SerializeToString())
+                        print(f"[ACK] card.action.trigger")
 
                     asyncio.create_task(self._process_event(event_data))
             except websockets.exceptions.ConnectionClosed:
@@ -737,6 +731,9 @@ class FeishuWsClient:
         self._ws = await websockets.connect(url, **kwargs)
         self._ws_url = url
         print("[WS已连接]")
+        # 预加载 SDK protobuf Frame（避免首次卡片事件时加载导致超时）
+        from lark_oapi.ws.pb.pbbp2_pb2 import Frame as PBFrame
+        self._PBFrame = PBFrame
         self._reconnecting = False
         self._ping_task = asyncio.create_task(self._ping_loop())
         await self._read_loop()
@@ -770,7 +767,7 @@ def main():
     print(f"启动自动清洗机器人 (App ID: {APP_ID[:10]}...)")
     print("使用说明：")
     print("  1) 在群聊发送 3 个 Excel 文件")
-    print("  2) 点击 Bot 发送的卡片按钮，在弹窗中填写4个参数并提交")
+    print("  2) 在 Bot 发送的卡片表单中直接填写4个参数并提交")
     print("     （兼容旧流程：也可直接发送文本参数）")
     print("  3) 机器人自动回复文案和处理后的文件")
     print()
