@@ -95,10 +95,10 @@ def get_form_card_json() -> str:
                     {
                         "tag": "input",
                         "name": "d8_pct",
-                        "label": {"tag": "plain_text", "content": "D8百分比"},
+                        "label": {"tag": "plain_text", "content": "今日新增占比"},
                         "placeholder": {
                             "tag": "plain_text",
-                            "content": "请输入D8百分比（如 4.4）",
+                            "content": "请输入今日新增占比（如 4.4）",
                         },
                         "required": True,
                     },
@@ -355,7 +355,7 @@ def parse_params(text: str) -> dict | None:
         (r'总成本[：:=]\s*([\d.]+)', 'total_cost'),
         (r'后台消耗[：:=]\s*([\d.]+)', 'backend_consume'),
         (r'上一时段[：:=]\s*([\d.]+)', 'prev_actual'),
-        (r'D\d*百分比[：:=]\s*([\d.]+)', 'd8_pct'),
+        (r'(?:D\d*百分比|今日新增占比)[：:=]\s*([\d.]+)', 'd8_pct'),
     ]
     for pattern, key in patterns:
         m = re.search(pattern, text)
