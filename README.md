@@ -32,16 +32,33 @@ D:\ReelClean-bot\
   ```
   pip install -r requirements.txt
   ```
-- 飞书应用（需开启机器人能力，订阅 `im.message.receive_v1` 事件）
+- 飞书应用（需开启机器人能力，订阅 `im.message.receive_v1` 和 `card.action.trigger` 事件）
 
 ## 飞书应用配置
 
 1. 飞书开放平台 → 创建应用 → 开启**机器人**能力
-2. **权限管理**添加：
-   - `im:message.group_msg` — 获取群组中所有消息（敏感权限）
-   - `im:message:send_as_bot` — 以应用的身份发消息
-   - `im:resource` — 获取与上传图片或文件资源
-3. **事件订阅**添加 `im.message.receive_v1`（WebSocket 模式无需回调地址）
+2. **权限管理**中添加：
+
+| 权限 | 说明 |
+|------|------|
+| `im:message` | 获取消息 |
+| `im:message.group_msg` | 获取群组中所有消息（敏感权限，需审核） |
+| `im:message.p2p_msg:readonly` | 读取用户发给机器人的单聊消息 |
+| `im:message:send_as_bot` | 以应用的身份发消息 |
+| `im:resource` | 获取与上传图片或文件资源 |
+| `cardkit:card:read` | 获取卡片信息（内联表单卡片） |
+| `cardkit:card:write` | 创建与更新卡片 |
+| `cardkit:template:read` | 获取卡片模板信息 |
+| `im:app_feed_card:write` | 创建、更新、删除应用消息流卡片 |
+
+3. **事件与回调**中添加：
+
+| 配置项 | 订阅内容 | 说明 |
+|--------|----------|------|
+| 事件配置 | `im.message.receive_v1`（v2.0） | 接收消息（文本 + 文件消息） |
+| 回调配置 | `card.action.trigger` | 卡片回传交互（表单提交、按钮点击等） |
+
+> WebSocket 模式无需配置 HTTP 回调地址，但两个配置项都必须订阅，缺一不可。缺少事件配置则收不到消息，缺少回调配置则卡片提交无响应。
 4. 发布应用并通过审核
 5. 获取 App ID / App Secret 填入 `.env`
 
@@ -76,7 +93,7 @@ FEISHU_APP_SECRET=xxxxxxxxxxxxxxxxxxxx
 
 ### 架构
 
-不依赖飞书官方 SDK，自建轻量客户端：
+核心自建轻量客户端，仅卡片响应复用 `lark-oapi` SDK 的 `Frame` 类：
 
 - **`FeishuWsClient`** — 自定义 WebSocket 客户端，调用 `/callback/ws/endpoint` 获取连接地址
 - **`encode_ping_frame()` / `decode_frame()`** — 自写 protobuf 编解码器（飞书 WS 帧格式仅需几个字段，无需完整 protobuf 库）
