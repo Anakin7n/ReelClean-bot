@@ -39,6 +39,9 @@ _WS_ENDPOINT_URI = "/callback/ws/endpoint"
 _pending_files = {}
 _PENDING_TIMEOUT = 600
 
+# bot 自身上传的文件 key 集合，防止 bot 发出的文件被误读为输入
+_bot_file_keys: set[str] = set()
+
 # ---- 卡片/Dialog JSON ----
 def get_form_card_json() -> str:
     """返回内联表单卡片 JSON（直接在卡片中填写参数）。
@@ -200,7 +203,9 @@ def upload_file_to_feishu(file_path: str, file_name: str) -> str:
     data = resp.json()
     if data.get("code") != 0:
         raise Exception(f"上传文件失败: {data}")
-    return data["data"]["file_key"]
+    fk = data["data"]["file_key"]
+    _bot_file_keys.add(fk)
+    return fk
 
 
 def send_file_to_chat(chat_id: str, file_key: str):
@@ -425,6 +430,10 @@ def on_file_message(msg_id: str, chat_id: str, file_key: str, file_name: str):
     print(f"    [文件处理] file_name={file_name}")
     if not file_name.lower().endswith(('.xlsx', '.xls')):
         print(f"    [跳过] 非Excel文件: {file_name}")
+        return
+
+    if file_key in _bot_file_keys:
+        print(f"    [跳过] bot 输出文件（非用户输入）")
         return
 
     try:
