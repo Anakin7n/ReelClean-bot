@@ -25,6 +25,13 @@ from dotenv import load_dotenv
 import requests
 import websockets
 
+# 强制 win32com 走晚绑定：Office 更新会改 Excel 的 dispid 表，gen_py 的早绑定
+# 缓存会陈旧并导致 DISP_E_MEMBERNOTFOUND（-2147352573 "找不到成员"）。让
+# GetClassForCLSID 永远返回 None，所有 COM 调用退化到 dynamic.Dispatch，
+# 运行时通过 GetIDsOfNames 解析方法名，跨 Office 版本/通道都稳。
+import win32com.client.gencache as _gencache
+_gencache.GetClassForCLSID = lambda *a, **kw: None
+
 # 懒加载：SDK protobuf Frame 仅在 card.action.trigger 时导入，避免拖慢启动
 
 load_dotenv()
